@@ -87,24 +87,36 @@ python process_automatic_dependencies() {
                 bb.debug(1, "package_auto_deps: auto_depends %s for %s: %s" % (auto_type, pkg, depends))
                 auto_depends[pkg] |= set(d for d in depends if d not in auto_provides[pkg])
 
+
         pkgdata_dirs = oe.data.typed_value('PKGDATADIRS', d)
+
+        def map_dependency(depend):
+            if depend in provided_by:
+                return provided_by[depend]
+
+            for path in pkgdata_dirs:
+                path = os.path.join(path, 'auto', auto_type)
+                file_path = os.path.join(path, depend)
+                if os.path.exists(file_path):
+                    with open(file_path, 'r') as f:
+                        dep_package = f.read().rstrip()
+                        return dep_package
+
         for pkg in packages:
             mapped_depends = set()
             for depend in auto_depends[pkg]:
-                if depend in provided_by:
-                    mapped_depends.add(provided_by[depend])
-                    continue
-
-                for path in pkgdata_dirs:
-                    path = os.path.join(path, 'auto', auto_type)
-                    file_path = os.path.join(path, depend)
-                    if os.path.exists(file_path):
-                        with open(file_path, 'r') as f:
-                            dep_package = f.read().rstrip()
-                        break
+                split = depend.split()
+                if len(split) == 1:
+                    dep_package = map_dependency(depend)
+                    if not dep_package:
+                        bb.fatal("No available provider for dependency `{}` of {}".format(depend, pkg))
                 else:
-                    bb.fatal("No available provider for dependency `{}` of {}".format(depend, pkg))
-
+                    for i, word in enumerate(split):
+                        if word in ("&", "|"):
+                            continue
+                        mapped = map_dependency(word) or word
+                        split[i] = mapped
+                    dep_package = ' '.join(split)
                 mapped_depends.add(dep_package)
                 provided_by[depend] = dep_package
 

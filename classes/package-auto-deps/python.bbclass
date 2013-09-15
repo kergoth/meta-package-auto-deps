@@ -79,7 +79,7 @@ def determine_python_depends(d, pkg, files):
                         [oe.path.join(inst_root, path) for path in search_paths])
     if dest_paths:
         output = subprocess.check_output([depscmd, '-d'] + dest_paths)
-        depends.extend(l.rstrip().split(None, 1)[0] for l in output.splitlines())
+        depends.extend(l.rstrip() for l in output.splitlines())
 
     interpreter_pattern = d.getVar('PYTHON_INTERPRETER_PATTERN', True)
     prefix_patterns = []

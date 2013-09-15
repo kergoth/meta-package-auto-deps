@@ -38,17 +38,96 @@ class DependError(PythonDepError):
         return "Failure determining dependencies of {}: {}".format(self.path, self.error)
 
 
+class And(list):
+    def __repr__(self):
+        return 'And([{0}])'.format(', '.join(repr(s) for s in self))
+
+    def __str__(self):
+        return " & ".join(str(s) for s in self if s)
+
+
+class Or(list):
+    def __repr__(self):
+        return 'Or([{0}])'.format(', '.join(repr(s) for s in self))
+
+    def __str__(self):
+        return " | ".join(str(s) for s in self if s)
+
+
+def get_importfrom_name(node, package_context):
+    if node.level == 0:
+        return [node.module]
+    elif not provide:
+        raise DependError("Error: ImportFrom non-zero level outside of a package: {0}".format((node.module, [a.name for a in node.names], node.level)), path)
+    elif level > len(provide_elements):
+        raise DependError("Error: ImportFrom level exceeds package depth: {0}".format((node.module, [a.name for a in node.names], node.level)), path)
+    else:
+        context = '.'.join(package_context[:-node.level])
+        if module:
+            if context:
+                return [context + '.' + module]
+            else:
+                return [module]
+
+def name_tree(tree, package_context=None):
+    for i, node in enumerate(tree):
+        if isinstance(node, (And, Or)):
+            name_tree(node, package_context)
+        elif isinstance(node, ast.Import):
+            tree[i] = [alias.name for alias in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            tree[i] = And(get_importfrom_name(node, package_context))
+        else:
+            raise DependError("Error: can't determine module name for {0}".format(node))
+
+
 class ImportVisitor(ast.NodeVisitor):
     def __init__(self):
-        self.imports = set()
-        self.importsfrom = []
+        self.imports = []
+        self.import_options = Or()
 
     def visit_Import(self, node):
-        for alias in node.names:
-            self.imports.add(alias.name)
+        self.imports.append(node)
 
     def visit_ImportFrom(self, node):
-        self.importsfrom.append((node.module, [a.name for a in node.names], node.level))
+        self.imports.append(node)
+
+    def visit_TryExcept(self, node):
+        options = self.get_import_options(node)
+        if options is None:
+            self.generic_visit(node)
+        else:
+            self.import_options.extend(options)
+
+    def get_import_options(self, node):
+        options = Or()
+        if not all(isinstance(s, (ast.Import, ast.ImportFrom)) for s in node.body):
+            # unsupported try/except block
+            return
+
+        nodes_all = ImportVisitor()
+        for s in node.body:
+            nodes_all.visit(s)
+        options.append(And(nodes_all.imports))
+
+        if (node.orelse or len(node.handlers) != 1
+                or node.handlers[0].type.id != 'ImportError'):
+            # unsupported try/except block
+            return
+
+        exc = node.handlers[0].body
+        if not all(isinstance(s, (ast.Import, ast.ImportFrom)) for s in exc):
+            if len(exc) != 1 or not isinstance(exc[0], ast.TryExcept):
+                # unsupported try/except block
+                return
+
+        nodes_exc = ImportVisitor()
+        for s in exc:
+            nodes_exc.visit(s)
+        options.append(And(nodes_exc.imports))
+        if nodes_exc.import_options:
+            options.append(Or(nodes_exc.import_options))
+        return options
 
 
 def get_provides(path):
@@ -91,6 +170,7 @@ def get_code_depends(code_string, path=None, provide=None, ispkg=False):
         if builtin_module in visitor.imports:
             visitor.imports.remove(builtin_module)
 
+    name_tree(visitor.imports)
     for module in visitor.imports:
         yield module, path
 
@@ -98,21 +178,12 @@ def get_code_depends(code_string, path=None, provide=None, ispkg=False):
         provide_elements = provide.split('.')
         if ispkg:
             provide_elements.append("__self__")
+    else:
+        provide_elements = None
 
-    for module, names, level in visitor.importsfrom:
-        if level == 0:
-            yield module, path
-        elif not provide:
-            raise DependError("Error: ImportFrom non-zero level outside of a package: {0}".format((module, names, level)), path)
-        elif level > len(provide_elements):
-            raise DependError("Error: ImportFrom level exceeds package depth: {0}".format((module, names, level)), path)
-        else:
-            context = '.'.join(provide_elements[:-level])
-            if module:
-                if context:
-                    yield context + '.' + module, path
-                else:
-                    yield module, path
+    if visitor.import_options:
+        name_tree(visitor.import_options, provide_elements)
+        yield str(visitor.import_options), path
 
 
 def get_file_depends(path):
@@ -186,7 +257,7 @@ def main():
                 sys.exit(1)
 
             for module, imp_by in modules:
-                print("{} {}".format(module, imp_by))
+                print(module)
     else:
         parser.print_help()
         sys.exit(2)
